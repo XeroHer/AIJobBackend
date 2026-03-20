@@ -75,11 +75,14 @@ app.get("/", (req, res) => {
 
 // ---------- Serve React in Production ----------
 if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, "client/build")));
+  const clientBuildPath = path.join(__dirname, "client/build");
 
-  // Catch-all route
-  app.get("/:catchAll(.*)", (req, res) => {
-    res.sendFile(path.join(__dirname, "client/build", "index.html"));
+  // Serve static assets
+  app.use(express.static(clientBuildPath));
+
+  // Fallback route for SPA
+  app.use((req, res) => {
+    res.sendFile(path.join(clientBuildPath, "index.html"));
   });
 }
 
