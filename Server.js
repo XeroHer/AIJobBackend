@@ -81,8 +81,8 @@ if (process.env.NODE_ENV === "production") {
   // Serve static files (JS, CSS, assets)
   app.use(express.static(clientBuildPath));
 
-  // SPA fallback: send index.html for all other routes
-  app.get("*", (req, res) => {
+  // Fallback route for SPA
+  app.use((req, res) => {
     res.sendFile(path.join(clientBuildPath, "index.html"));
   });
 }
