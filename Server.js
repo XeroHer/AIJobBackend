@@ -30,8 +30,8 @@ const allowedOrigins = [
   "https://localhost:5174",
   "http://127.0.0.1:5173",
   "http://localhost:3000",
-  "https://aijobhub.netlify.app",
   "https://unrivaled-bonbon-13c77f.netlify.app",
+  
 ];
 
 app.use(
@@ -75,16 +75,18 @@ app.get("/", (req, res) => {
 
 // ---------- Serve React in Production ----------
 if (process.env.NODE_ENV === "production") {
-  const clientBuildPath = path.join(__dirname, "client/build");
+  // Path from Backend folder to the frontend dist folder
+  const clientBuildPath = path.join(__dirname, "../jobportal/dist");
 
-  // Serve static assets
+  // Serve static files (JS, CSS, assets)
   app.use(express.static(clientBuildPath));
 
-  // Fallback route for SPA
-  app.use((req, res) => {
+  // SPA fallback: send index.html for all other routes
+  app.get("*", (req, res) => {
     res.sendFile(path.join(clientBuildPath, "index.html"));
   });
 }
+
 
 // ---------- Start Server ----------
 const PORT = process.env.PORT || 5000;
