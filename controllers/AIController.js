@@ -69,7 +69,7 @@ exports.analyzeATS = async (req, res) => {
     let atsAnalysis;
     try {
       const aiResponse = await axios.post(
-        "http://127.0.0.1:8000/ats/analyze",
+       "https://aijobbackend.onrender.com/ats/analyze",
         {
           resume: resumeText,
           userProfile,
