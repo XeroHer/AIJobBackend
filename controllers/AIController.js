@@ -66,23 +66,21 @@ exports.analyzeATS = async (req, res) => {
     };
 
     // --- Call AI Service ---
+    const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://127.0.0.1:8000";
     let atsAnalysis;
     try {
       const aiResponse = await axios.post(
-        "http://127.0.0.1:8000/ats/analyze",
+        `${AI_SERVICE_URL}/ats/analyze`,
         {
-          resume: resumeText,
-          userProfile,
-          jobs: allJobs.map((job) => ({
-            id: job._id.toString(),
-            title: job.title,
-            company: job.company,
-            location: job.location,
-            description: job.description,
-          })),
-        },
-        { timeout: 30000 }
-      );
+    resume: resumeText,
+    jobDescription: "", // optional (or pass something meaningful)
+    jobs: allJobs.slice(0, 50).map((job) => ({
+      id: job._id.toString(),
+      description: job.description,
+    })),
+  },
+  { timeout: 60000 }
+);
       atsAnalysis = aiResponse.data;
       console.log(
         "AI analysis received:",
