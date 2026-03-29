@@ -40,6 +40,7 @@ const sendPasswordResetOTP = async (email) => {
     });
   } catch (err) {
     console.log(`SMTP failed, OTP for ${user.email}: ${otp}`);
+    console.error("❌ EMAIL ERROR:", err);
   }
 
   return { message: "OTP sent (check email or console)" };
@@ -109,6 +110,7 @@ router.post("/register", async (req, res) => {
       });
     } catch (err) {
       console.log(`SMTP failed, OTP for ${user.email}: ${otp}`);
+      console.error("❌ EMAIL ERROR:", err);
     }
 
     res
