@@ -72,19 +72,7 @@ app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
-// ---------- Serve React in Production ----------
-if (process.env.NODE_ENV === "production") {
-  // Path from Backend folder to the frontend dist folder
-  const clientBuildPath = path.join(__dirname, "../jobportal/dist");
 
-  // Serve static files (JS, CSS, assets)
-  app.use(express.static(clientBuildPath));
-
-  // Fallback route for SPA
-  app.use((req, res) => {
-    res.sendFile(path.join(clientBuildPath, "index.html"));
-  });
-}
 
 
 // ---------- Start Server ----------
