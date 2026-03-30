@@ -11,31 +11,49 @@ const router = express.Router();
 
 /* ================== EMAIL TRANSPORT ================== */
 const transporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
+  family: 4, // ✅ FIX IPv6 ISSUE
   auth: {
     user: process.env.SMTP_USER,
     pass: process.env.SMTP_PASS,
   },
 });
 
+// optional check
+transporter.verify((err) => {
+  if (err) console.error("SMTP ERROR:", err);
+  else console.log("✅ SMTP Ready");
+});
 
-/* ================== HELPER ================== */
+/* ================== HELPERS ================== */
 const normalizeEmail = (email) => {
   if (!email || typeof email !== "string") return null;
   return email.toLowerCase().trim();
 };
 
-/* ================== RATE LIMITER ================== */
+/* ================== RATE LIMITERS ================== */
 const registerLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 mins
+  windowMs: 15 * 60 * 1000,
   max: 50,
-  message: "Too many registration attempts. Try again later.",
+  message: "Too many registration attempts. Try later.",
 });
 
-/* ================== OTP HELPER ================== */
+const otpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  message: "Too many OTP requests. Try later.",
+});
+
+/* ================== PASSWORD RULE ================== */
+const passwordRegex =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/;
+
+/* ================== OTP SEND ================== */
 const sendPasswordResetOTP = async (email) => {
   const normalizedEmail = normalizeEmail(email);
-  if (!normalizedEmail) throw new Error("Email is required");
+  if (!normalizedEmail) throw new Error("Invalid email");
 
   const user = await User.findOne({ email: normalizedEmail });
   if (!user) throw new Error("User not found");
@@ -52,54 +70,44 @@ const sendPasswordResetOTP = async (email) => {
       from: `"AI Job Portal" <${process.env.SMTP_USER}>`,
       to: user.email,
       subject: "Password Reset OTP",
-      text: `Hello ${user.name},\n\nYour password reset OTP is: ${otp}\nThis OTP will expire in 10 minutes.`,
+      text: `Hello ${user.name},\n\nYour OTP is: ${otp}\nExpires in 10 minutes.`,
     });
   } catch (err) {
-    console.log(`SMTP failed, OTP for ${user.email}: ${otp}`);
-    console.error("❌ EMAIL ERROR:", err);
+    console.error("❌ EMAIL ERROR:", err.message);
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`OTP for ${user.email}: ${otp}`);
+    }
   }
 
-  return { message: "OTP sent (check email or console)" };
+  return { message: "OTP sent" };
 };
 
 /* ================== REGISTER ================== */
-const passwordRegex =
-  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&]).{8,}$/;
-
 router.post("/register", registerLimiter, async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
 
     if (!name || !email || !password || !role) {
-      return res.status(400).json({ message: "All fields are required" });
+      return res.status(400).json({ message: "All fields required" });
     }
 
     const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail) {
-      return res.status(400).json({ message: "Invalid email format" });
-    }
-
     if (!validator.isEmail(normalizedEmail)) {
-      return res.status(400).json({ message: "Invalid email format" });
+      return res.status(400).json({ message: "Invalid email" });
     }
 
     const existingUser = await User.findOne({ email: normalizedEmail });
     if (existingUser) {
-      return res.status(400).json({ message: "Email already registered" });
+      return res.status(400).json({ message: "Email already exists" });
     }
 
     if (!passwordRegex.test(password)) {
-      return res.status(400).json({
-        message:
-          "Password must be at least 8 characters long and include uppercase, lowercase, number, and special character",
-      });
+      return res.status(400).json({ message: "Weak password" });
     }
 
-    const passwordCheck = zxcvbn(password);
-    if (passwordCheck.score < 3) {
-      return res.status(400).json({
-        message: "Password is too weak. Try something more complex.",
-      });
+    const strength = zxcvbn(password);
+    if (strength.score < 3) {
+      return res.status(400).json({ message: "Password too weak" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -122,79 +130,66 @@ router.post("/register", registerLimiter, async (req, res) => {
       await transporter.sendMail({
         from: `"AI Job Portal" <${process.env.SMTP_USER}>`,
         to: user.email,
-        subject: "Verify your account (OTP)",
-        text: `Hello ${user.name},\n\nYour OTP is: ${otp}\nThis OTP will expire in 10 minutes.`,
+        subject: "Verify OTP",
+        text: `Hello ${user.name},\n\nYour OTP: ${otp}`,
       });
     } catch (err) {
-      console.log(`SMTP failed, OTP for ${user.email}: ${otp}`);
-      console.error("❌ EMAIL ERROR:", err);
+      console.error("❌ EMAIL ERROR:", err.message);
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`OTP for ${user.email}: ${otp}`);
+      }
     }
 
-    res.status(201).json({
-      message: "Account created! Check your email to verify your account.",
-      email: user.email,
-    });
+    res.status(201).json({ message: "Account created", email: user.email });
   } catch (err) {
-    console.error("Register error:", err);
-    res.status(500).json({ message: err.message || "Server error" });
+    res.status(500).json({ message: err.message });
   }
 });
 
 /* ================== VERIFY OTP ================== */
 router.post("/verify-otp", async (req, res) => {
   try {
-    
     const { email, otp } = req.body;
 
-    const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail || !otp) {
-      return res
-        .status(400)
-        .json({ message: "Email and OTP are required" });
-    }
+    const user = await User.findOne({
+      email: normalizeEmail(email),
+    });
 
-    const user = await User.findOne({ email: normalizedEmail });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     if (user.verified) {
-      return res
-        .status(400)
-        .json({ message: "Account already verified" });
+      return res.status(400).json({ message: "Already verified" });
     }
 
-    if (user.otp !== otp) {
+    if (String(user.otp) !== String(otp)) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
     if (!user.otpExpires || user.otpExpires < new Date()) {
-      return res.status(400).json({ message: "OTP has expired" });
+      return res.status(400).json({ message: "OTP expired" });
     }
 
     user.verified = true;
     user.otp = null;
     user.otpExpires = null;
+
     await user.save();
 
-    res
-      .status(200)
-      .json({ message: "OTP verified successfully! You can now log in." });
+    res.json({ message: "Verified successfully" });
   } catch (err) {
-    console.error("Verify OTP error:", err);
-    res.status(500).json({ message: err.message || "Server error" });
+    res.status(500).json({ message: err.message });
   }
 });
 
 /* ================== PASSWORD RESET ================== */
 
 // send OTP
-router.post("/password-reset/send-otp", async (req, res) => {
+router.post("/password-reset/send-otp", otpLimiter, async (req, res) => {
   try {
-    const { email } = req.body;
-    const result = await sendPasswordResetOTP(email);
-    res.status(200).json(result);
+    const result = await sendPasswordResetOTP(req.body.email);
+    res.json(result);
   } catch (err) {
-    console.error("Password reset OTP error:", err);
-    res.status(400).json({ message: err.message || "Server error" });
+    res.status(400).json({ message: err.message });
   }
 });
 
@@ -203,27 +198,21 @@ router.post("/password-reset/verify-otp", async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail) {
-      return res.status(400).json({ message: "Email is required" });
-    }
-
-    const user = await User.findOne({ email: normalizedEmail });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const user = await User.findOne({
+      email: normalizeEmail(email),
+    });
 
     if (
-      !user.resetPasswordOtp ||
-      user.resetPasswordOtp !== otp ||
-      !user.resetPasswordExpires ||
+      !user ||
+      String(user.resetPasswordOtp) !== String(otp) ||
       user.resetPasswordExpires < new Date()
     ) {
-      return res.status(400).json({ message: "Invalid or expired OTP" });
+      return res.status(400).json({ message: "Invalid OTP" });
     }
 
-    res.status(200).json({ message: "OTP verified" });
+    res.json({ message: "OTP verified" });
   } catch (err) {
-    console.error("Verify OTP error:", err);
-    res.status(500).json({ message: err.message || "Server error" });
+    res.status(500).json({ message: err.message });
   }
 });
 
@@ -232,36 +221,37 @@ router.post("/password-reset/reset", async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
 
-    if (!email || !otp || !newPassword) {
-      return res.status(400).json({ message: "All fields are required" });
-    }
-
-    const normalizedEmail = normalizeEmail(email);
-    if (!normalizedEmail) {
-      return res.status(400).json({ message: "Invalid email" });
-    }
-
-    const user = await User.findOne({ email: normalizedEmail });
-    if (!user) return res.status(404).json({ message: "User not found" });
+    const user = await User.findOne({
+      email: normalizeEmail(email),
+    });
 
     if (
-      !user.resetPasswordOtp ||
-      user.resetPasswordOtp !== otp ||
-      !user.resetPasswordExpires ||
+      !user ||
+      String(user.resetPasswordOtp) !== String(otp) ||
       user.resetPasswordExpires < new Date()
     ) {
-      return res.status(400).json({ message: "Invalid or expired OTP" });
+      return res.status(400).json({ message: "Invalid OTP" });
+    }
+
+    // ✅ validate password again
+    if (!passwordRegex.test(newPassword)) {
+      return res.status(400).json({ message: "Weak password" });
+    }
+
+    const strength = zxcvbn(newPassword);
+    if (strength.score < 3) {
+      return res.status(400).json({ message: "Password too weak" });
     }
 
     user.password = await bcrypt.hash(newPassword, 10);
     user.resetPasswordOtp = null;
     user.resetPasswordExpires = null;
+
     await user.save();
 
-    res.status(200).json({ message: "Password reset successfully" });
+    res.json({ message: "Password reset successful" });
   } catch (err) {
-    console.error("Password reset error:", err);
-    res.status(500).json({ message: err.message || "Server error" });
+    res.status(500).json({ message: err.message });
   }
 });
 
