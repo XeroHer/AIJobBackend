@@ -1,6 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const User = require("../models/User");
 
 const validator = require("validator");
@@ -9,23 +9,7 @@ const zxcvbn = require("zxcvbn");
 
 const router = express.Router();
 
-/* ================== EMAIL TRANSPORT ================== */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  family: 4, // ✅ FIX IPv6 ISSUE
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-});
-
-// optional check
-transporter.verify((err) => {
-  if (err) console.error("SMTP ERROR:", err);
-  else console.log("✅ SMTP Ready");
-});
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ================== HELPERS ================== */
 const normalizeEmail = (email) => {
@@ -66,11 +50,16 @@ const sendPasswordResetOTP = async (email) => {
   await user.save();
 
   try {
-    await transporter.sendMail({
-      from: `"AI Job Portal" <${process.env.SMTP_USER}>`,
+    await resend.emails.send({
+      from: "AI Job Portal <onboarding@resend.dev>",
       to: user.email,
       subject: "Password Reset OTP",
-      text: `Hello ${user.name},\n\nYour OTP is: ${otp}\nExpires in 10 minutes.`,
+      html: `
+        <h2>Hello ${user.name}</h2>
+        <p>Your OTP is:</p>
+        <h1>${otp}</h1>
+        <p>This OTP expires in 10 minutes.</p>
+      `,
     });
   } catch (err) {
     console.error("❌ EMAIL ERROR:", err.message);
@@ -127,11 +116,16 @@ router.post("/register", registerLimiter, async (req, res) => {
     });
 
     try {
-      await transporter.sendMail({
-        from: `"AI Job Portal" <${process.env.SMTP_USER}>`,
+      await resend.emails.send({
+        from: "AI Job Portal <onboarding@resend.dev>",
         to: user.email,
-        subject: "Verify OTP",
-        text: `Hello ${user.name},\n\nYour OTP: ${otp}`,
+        subject: "Verify your account",
+        html: `
+          <h2>Hello ${user.name}</h2>
+          <p>Your OTP is:</p>
+          <h1>${otp}</h1>
+          <p>This OTP expires in 10 minutes.</p>
+        `,
       });
     } catch (err) {
       console.error("❌ EMAIL ERROR:", err.message);
@@ -233,7 +227,6 @@ router.post("/password-reset/reset", async (req, res) => {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
-    // ✅ validate password again
     if (!passwordRegex.test(newPassword)) {
       return res.status(400).json({ message: "Weak password" });
     }
