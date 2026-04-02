@@ -2,10 +2,10 @@
   
   "name": "aijob-backend",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "Server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node Server.js",
+    "dev": "nodemon Server.js"
   },
   "dependencies": {
     "@sendgrid/mail": "^8.1.6",
