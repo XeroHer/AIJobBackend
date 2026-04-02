@@ -79,7 +79,7 @@ exports.analyzeATS = async (req, res) => {
       description: job.description,
     })),
   },
-  { timeout: 60000 }
+  { timeout: 120000 }
 );
       atsAnalysis = aiResponse.data;
       console.log(
