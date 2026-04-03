@@ -1,6 +1,6 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
-const nodemailer = require("nodemailer");
+const { Resend } = require("resend");
 const User = require("../models/User");
 
 const validator = require("validator");
@@ -9,32 +9,8 @@ const zxcvbn = require("zxcvbn");
 
 const router = express.Router();
 
-/* ================== EMAIL SETUP ================== */
-const transporter = nodemailer.createTransport({
-  host: "smtp.gmail.com",
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS, // Gmail App Password
-  },
-});
-
-const sendEmail = async (to, subject, html) => {
-  try {
-    const info = await transporter.sendMail({
-      from: `"AI Job Portal" <${process.env.SMTP_USER}>`,
-      to,
-      subject,
-      html,
-    });
-
-    console.log("📧 Email sent:", info.messageId);
-  } catch (err) {
-    console.error("❌ EMAIL ERROR:", err);
-    throw new Error("Email failed");
-  }
-};
+// Initialize Resend with your API key
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 /* ================== HELPERS ================== */
 const normalizeEmail = (email) => {
@@ -42,18 +18,17 @@ const normalizeEmail = (email) => {
   return email.toLowerCase().trim();
 };
 
-const generateOTP = () =>
-  Math.floor(100000 + Math.random() * 900000).toString();
-
 /* ================== RATE LIMITERS ================== */
 const registerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 50,
+  message: "Too many registration attempts. Try later.",
 });
 
 const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
   max: 5,
+  message: "Too many OTP requests. Try later.",
 });
 
 /* ================== PASSWORD RULE ================== */
@@ -66,22 +41,34 @@ const sendPasswordResetOTP = async (email) => {
   if (!normalizedEmail) throw new Error("Invalid email");
 
   const user = await User.findOne({ email: normalizedEmail });
-  if (!user) return { message: "If email exists, OTP sent" };
+  if (!user) throw new Error("User not found");
 
-  const otp = generateOTP();
-  const hashedOtp = await bcrypt.hash(otp, 10);
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
-  user.resetPasswordOtp = hashedOtp;
-  user.resetPasswordExpires = new Date(Date.now() + 10 * 60 * 1000);
+  user.resetPasswordOtp = otp;
+  user.resetPasswordExpires = otpExpires;
   await user.save();
 
-  await sendEmail(
-    user.email,
-    "Password Reset OTP",
-    `<h2>Hello ${user.name}</h2>
-     <h1>${otp}</h1>
-     <p>Expires in 10 minutes</p>`
-  );
+  try {
+    await resend.emails.send({
+      from: "AI Job Portal <noreply@myjobportal.store>", // ✅ Use your verified domain
+      to: user.email,
+      subject: "Password Reset OTP",
+      html: `
+        <h2>Hello ${user.name}</h2>
+        <p>Your OTP is:</p>
+        <h1>${otp}</h1>
+        <p>This OTP expires in 10 minutes.</p>
+      `,
+    });
+  } catch (err) {
+    console.error("❌ EMAIL ERROR:", err.message);
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`OTP for ${user.email}: ${otp}`);
+    }
+    throw new Error("Email failed to send");
+  }
 
   return { message: "OTP sent" };
 };
@@ -96,12 +83,12 @@ router.post("/register", registerLimiter, async (req, res) => {
     }
 
     const normalizedEmail = normalizeEmail(email);
-
     if (!validator.isEmail(normalizedEmail)) {
       return res.status(400).json({ message: "Invalid email" });
     }
 
-    if (await User.findOne({ email: normalizedEmail })) {
+    const existingUser = await User.findOne({ email: normalizedEmail });
+    if (existingUser) {
       return res.status(400).json({ message: "Email already exists" });
     }
 
@@ -109,14 +96,15 @@ router.post("/register", registerLimiter, async (req, res) => {
       return res.status(400).json({ message: "Weak password" });
     }
 
-    if (zxcvbn(password).score < 3) {
+    const strength = zxcvbn(password);
+    if (strength.score < 3) {
       return res.status(400).json({ message: "Password too weak" });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const otp = generateOTP();
-    const hashedOtp = await bcrypt.hash(otp, 10);
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpExpires = new Date(Date.now() + 10 * 60 * 1000);
 
     const user = await User.create({
       name,
@@ -124,22 +112,33 @@ router.post("/register", registerLimiter, async (req, res) => {
       password: hashedPassword,
       role,
       provider: "local",
-      otp: hashedOtp,
-      otpExpires: new Date(Date.now() + 10 * 60 * 1000),
+      otp,
+      otpExpires,
       verified: false,
     });
 
-    await sendEmail(
-      user.email,
-      "Verify your account",
-      `<h2>Hello ${user.name}</h2>
-       <h1>${otp}</h1>
-       <p>Expires in 10 minutes</p>`
-    );
+    try {
+      await resend.emails.send({
+        from: "AI Job Portal <noreply@myjobportal.store>", // ✅ Match verified domain
+        to: user.email,
+        subject: "Verify your account",
+        html: `
+          <h2>Hello ${user.name}</h2>
+          <p>Your OTP is:</p>
+          <h1>${otp}</h1>
+          <p>This OTP expires in 10 minutes.</p>
+        `,
+      });
+    } catch (err) {
+      console.error("❌ EMAIL ERROR:", err.message);
+      if (process.env.NODE_ENV !== "production") {
+        console.log(`OTP for ${user.email}: ${otp}`);
+      }
+      return res.status(500).json({ message: "Failed to send OTP email" });
+    }
 
     res.status(201).json({ message: "Account created", email: user.email });
   } catch (err) {
-    console.error(err);
     res.status(500).json({ message: err.message });
   }
 });
@@ -149,19 +148,14 @@ router.post("/verify-otp", async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    const user = await User.findOne({
-      email: normalizeEmail(email),
-    });
-
+    const user = await User.findOne({ email: normalizeEmail(email) });
     if (!user) return res.status(404).json({ message: "User not found" });
 
     if (user.verified) {
       return res.status(400).json({ message: "Already verified" });
     }
 
-    const isMatch = await bcrypt.compare(otp, user.otp);
-
-    if (!isMatch) {
+    if (String(user.otp) !== String(otp)) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
@@ -182,8 +176,6 @@ router.post("/verify-otp", async (req, res) => {
 });
 
 /* ================== PASSWORD RESET ================== */
-
-// send OTP
 router.post("/password-reset/send-otp", otpLimiter, async (req, res) => {
   try {
     const result = await sendPasswordResetOTP(req.body.email);
@@ -193,20 +185,12 @@ router.post("/password-reset/send-otp", otpLimiter, async (req, res) => {
   }
 });
 
-// verify OTP
 router.post("/password-reset/verify-otp", async (req, res) => {
   try {
     const { email, otp } = req.body;
 
-    const user = await User.findOne({
-      email: normalizeEmail(email),
-    });
-
-    if (
-      !user ||
-      !(await bcrypt.compare(otp, user.resetPasswordOtp)) ||
-      user.resetPasswordExpires < new Date()
-    ) {
+    const user = await User.findOne({ email: normalizeEmail(email) });
+    if (!user || String(user.resetPasswordOtp) !== String(otp) || user.resetPasswordExpires < new Date()) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
@@ -216,20 +200,12 @@ router.post("/password-reset/verify-otp", async (req, res) => {
   }
 });
 
-// reset password
 router.post("/password-reset/reset", async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
 
-    const user = await User.findOne({
-      email: normalizeEmail(email),
-    });
-
-    if (
-      !user ||
-      !(await bcrypt.compare(otp, user.resetPasswordOtp)) ||
-      user.resetPasswordExpires < new Date()
-    ) {
+    const user = await User.findOne({ email: normalizeEmail(email) });
+    if (!user || String(user.resetPasswordOtp) !== String(otp) || user.resetPasswordExpires < new Date()) {
       return res.status(400).json({ message: "Invalid OTP" });
     }
 
@@ -237,7 +213,8 @@ router.post("/password-reset/reset", async (req, res) => {
       return res.status(400).json({ message: "Weak password" });
     }
 
-    if (zxcvbn(newPassword).score < 3) {
+    const strength = zxcvbn(newPassword);
+    if (strength.score < 3) {
       return res.status(400).json({ message: "Password too weak" });
     }
 
